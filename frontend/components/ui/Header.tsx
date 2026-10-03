@@ -73,14 +73,14 @@ export function Header() {
             </span>
           </div>
 
-          {/* Sanity Studio Link */}
+          {/* Sanity Knowledge Base Link */}
           <a
             href="http://localhost:3333"
             target="_blank"
             rel="noopener noreferrer"
             className="rounded-md border border-[#23283b] bg-[#161926] px-3 py-1.5 text-xs font-medium text-slate-300 transition-colors hover:border-indigo-500/40 hover:text-white"
           >
-            Sanity Studio <span className="text-slate-500 text-[10px] hidden sm:inline">:3333</span>
+            Sanity Knowledge Base
           </a>
         </div>
       </div>

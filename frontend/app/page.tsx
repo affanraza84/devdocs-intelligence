@@ -13,7 +13,7 @@ export default function Home() {
           <div className="flex items-center space-x-2">
             <span>DevDocs Intelligence</span>
             <span>•</span>
-            <span className="text-slate-400">Sanity Context MCP Challenge 2026</span>
+            <span className="text-slate-400">Sanity Challenge 2026</span>
           </div>
           <div className="font-mono text-[11px] text-slate-400">
             Powered by Gemini &amp; Sanity Knowledge Base
