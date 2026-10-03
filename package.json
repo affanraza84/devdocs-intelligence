@@ -5,6 +5,8 @@
   "main": "package.json",
   "license": "UNLICENSED",
   "scripts": {
+    "agent:ask": "tsx scripts/ask-agent.ts",
+    "agent:server": "tsx src/agent/server.ts",
     "build": "sanity build",
     "deploy": "sanity deploy",
     "deploy-graphql": "sanity graphql deploy",
@@ -16,8 +18,11 @@
     "sanity"
   ],
   "dependencies": {
+    "@ai-sdk/google": "^4.0.87",
+    "@ai-sdk/mcp": "^2.0.66",
     "@sanity/client": "^8.9.0",
     "@sanity/vision": "^6.17.0",
+    "ai": "^7.0.127",
     "dotenv": "^18.0.5",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

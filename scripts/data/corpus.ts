@@ -430,7 +430,7 @@ export const documentationData: DocumentationDoc[] = [
       'Next.js 16 evolution of Middleware into Proxy (proxy.ts), handling edge network boundaries, path rewrites, security headers, and request routing.',
     contentLines: [
       '## The Next.js 16 Proxy Convention',
-      'In Next.js 16, the feature historically known as Middleware has been officially renamed to Proxy. This change clarifies its role as a network boundary and request routing layer, differentiating it from traditional Express-style middleware pipelines.',
+      'Next.js 16 deprecates middleware.ts and introduces proxy.ts as the replacement file convention. This change clarifies its role as a network boundary and request routing layer, differentiating it from traditional Express-style middleware pipelines.',
       'The file is declared as proxy.ts (or proxy.js) in the project root or src/ directory and exports a named proxy function.',
       '## Execution Lifecycle and Matcher',
       'Proxy executes on every matching request BEFORE cached content and routes are resolved. It is configured via an exported config object containing a matcher regex or glob array.',
@@ -468,7 +468,7 @@ export const documentationData: DocumentationDoc[] = [
       '## Critical Changes in Next.js 15 Defaults',
       '- Default fetch: Changed from cached (force-cache) to UNCACHED (no-store).',
       '- GET Route Handlers: Changed from cached by default to UNCACHED by default.',
-      '- Client Router Cache: The staleTime for dynamic route segments is set to 0 seconds by default, ensuring navigation always fetches the latest server state unless configured otherwise.',
+      '- Client Router Cache: Starting with Next.js 15, the default dynamic staleTime is 0 seconds; this changed from the previous 30-second default.',
       '## Choosing the Right Invalidation Strategy',
       'To cache data explicitly, pass { cache: "force-cache" } or next: { revalidate: seconds } into fetch calls. For dynamic on-demand purging, use revalidatePath() or revalidateTag() from next/cache.',
     ],
@@ -938,7 +938,7 @@ export const releaseNoteData: ReleaseNoteDoc[] = [
     ],
     breakingChanges: [
       'fetch requests are no longer cached by default',
-      'GET Route Handlers are no longer cached by default',
+      'In Next.js 15, GET Route Handlers changed to uncached by default.',
       'cookies(), headers(), params, and searchParams are asynchronous',
       'Client Router Cache staleTime for dynamic pages changed from 30s to 0s',
     ],

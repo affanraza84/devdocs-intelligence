@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #090a0f;
+  --bg-surface: #0f111a;
+  --bg-elevated: #161926;
+  --border-subtle: #1a1f30;
+  --border-default: #23283b;
+  --border-strong: #333a52;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent: #6366f1;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #090a0f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #23283b;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #333a52;
+}
+
+/* Code block styles */
+pre code {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+code:not(pre code) {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background-color: rgba(99, 102, 241, 0.12);
+  color: #a5b4fc;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+/* Markdown prose enhancements */
+.prose-dark {
+  color: #e2e8f0;
+}
+
+.prose-dark h1,
+.prose-dark h2,
+.prose-dark h3,
+.prose-dark h4 {
+  color: #f8fafc;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  margin-top: 1.5em;
+  margin-bottom: 0.75em;
+}
+
+.prose-dark p {
+  margin-bottom: 1em;
+  line-height: 1.7;
+}
+
+.prose-dark ul,
+.prose-dark ol {
+  margin-top: 0.5em;
+  margin-bottom: 1em;
+  padding-left: 1.5em;
+}
+
+.prose-dark li {
+  margin-bottom: 0.35em;
+  line-height: 1.6;
+}
+
+.prose-dark table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.25em 0;
+  font-size: 0.875rem;
+}
+
+.prose-dark th,
+.prose-dark td {
+  border: 1px solid #23283b;
+  padding: 0.625rem 0.875rem;
+  text-align: left;
+}
+
+.prose-dark th {
+  background-color: #131622;
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.prose-dark tr:nth-child(even) {
+  background-color: rgba(15, 17, 26, 0.5);
+}
+
+.prose-dark blockquote {
+  border-left: 3px solid #6366f1;
+  padding-left: 1rem;
+  color: #94a3b8;
+  margin: 1em 0;
+  font-style: italic;
+}
