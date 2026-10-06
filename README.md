@@ -1,6 +1,6 @@
 # DevDocs Intelligence
 
-DevDocs Intelligence is a version-aware developer documentation intelligence agent powered by Google Gemini, Sanity structured content, Sanity Knowledge Base, and Sanity Context MCP. Built for the Sanity Challenge 2026, it transforms technical documentation from static text into an interconnected, queryable knowledge graph capable of answering complex, multi-version framework questions about Next.js with grounded citations and live tool provenance.
+DevDocs Intelligence is a version-aware developer documentation intelligence agent powered by Google Gemini, Sanity structured content, Sanity Knowledge Base, and Sanity Context MCP. It transforms technical documentation from static text into an interconnected, queryable knowledge graph capable of answering complex, multi-version framework questions about Next.js with grounded citations and live tool provenance.
 
 ## Demo
 
