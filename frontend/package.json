@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npx tsx --test ../tests/**/*.test.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.87",
@@ -21,7 +22,8 @@
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.0",
-    "tailwind-merge": "^3.0.2"
+    "tailwind-merge": "^3.0.2",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

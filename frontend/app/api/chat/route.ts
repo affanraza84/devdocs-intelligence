@@ -1,197 +1,369 @@
 import { NextRequest } from 'next/server'
 import {
   askDevDocsAgentStream,
-  formatPathToTitle,
-  parseSourceType,
+  extractSourcesFromToolCall,
+  extractSourcesFromToolResult,
 } from '@/lib/agent/devdocs-agent'
-import type { AgentToolInvocation, GroundedSource } from '@/lib/agent/types'
+import { sanitizeError } from '@/lib/agent/errors'
+import { RequestLogger } from '@/lib/agent/logger'
+import { globalRateLimiter } from '@/lib/agent/rate-limiter'
+import type {
+  AgentToolInvocation,
+  StreamEvent,
+} from '@/lib/agent/types'
+import {
+  validateChatRequest,
+  validatePayloadSize,
+} from '@/lib/agent/validation'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-export async function POST(req: NextRequest) {
+/**
+ * Checks if the request origin is allowed.
+ */
+function isOriginAllowed(origin: string | null, host: string | null): boolean {
+  if (!origin) return true // Same-origin or non-browser client
+
   try {
-    let body: any
-    try {
-      body = await req.json()
-    } catch {
-      return new Response(
-        JSON.stringify({ error: 'Invalid JSON request payload' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      )
+    const originUrl = new URL(origin)
+    // Allow localhost and local loopbacks in development
+    if (
+      originUrl.hostname === 'localhost' ||
+      originUrl.hostname === '127.0.0.1' ||
+      originUrl.hostname === '0.0.0.0'
+    ) {
+      return true
     }
 
-    const prompt: string | undefined =
-      body.prompt ||
-      (Array.isArray(body.messages) &&
-        body.messages[body.messages.length - 1]?.content)
-
-    if (!prompt || typeof prompt !== 'string' || prompt.trim() === '') {
-      return new Response(
-        JSON.stringify({ error: 'Please provide a non-empty question or prompt.' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      )
+    // Check host match
+    if (host && originUrl.host === host) {
+      return true
     }
 
-    const encoder = new TextEncoder()
+    const allowedOrigin = process.env.ALLOWED_ORIGIN
+    if (allowedOrigin && (allowedOrigin === '*' || allowedOrigin === origin)) {
+      return true
+    }
+  } catch {
+    return false
+  }
 
-    const stream = new ReadableStream({
-      async start(controller) {
-        function sendEvent(type: string, data: any) {
-          try {
-            const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`
-            controller.enqueue(encoder.encode(payload))
-          } catch {
-            // Controller might be closed
-          }
-        }
+  return false
+}
 
-        try {
-          sendEvent('status', { message: 'Initializing Sanity Context MCP connection...' })
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN || '*',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-Request-Id, Authorization',
+    },
+  })
+}
 
-          const { streamResult } = await askDevDocsAgentStream({
-            prompt: prompt.trim(),
-            onStatus: (status) => {
-              sendEvent('status', { message: status })
-            },
-          })
+export async function POST(req: NextRequest) {
+  const requestId =
+    req.headers.get('x-request-id') ||
+    (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `req-${Date.now()}`)
 
-          sendEvent('status', { message: 'Querying Sanity Knowledge Base...' })
+  const logger = new RequestLogger(requestId)
 
-          const discoveredPaths = new Set<string>()
-
-          for await (const part of streamResult.fullStream) {
-            if (part.type === 'tool-call') {
-              const input = (part as any).args || (part as any).input || {}
-              const invocation: AgentToolInvocation = {
-                toolName: part.toolName,
-                args: input,
-                timestamp: new Date().toISOString(),
-              }
-              sendEvent('tool_call', invocation)
-
-              // Extract paths from knowledge_base_read
-              if (part.toolName === 'knowledge_base_read') {
-                const paths: string[] = Array.isArray(input.paths)
-                  ? input.paths
-                  : Array.isArray(input.entry_paths)
-                    ? input.entry_paths
-                    : []
-
-                for (const path of paths) {
-                  if (path && !discoveredPaths.has(path)) {
-                    discoveredPaths.add(path)
-                    const title = formatPathToTitle(path)
-                    const type = parseSourceType(path)
-                    const source: GroundedSource = {
-                      id: `source-${path.replace(/[/_]/g, '-')}`,
-                      title,
-                      path,
-                      type,
-                      version: path.includes('15')
-                        ? '15.x'
-                        : path.includes('14')
-                          ? '14.x'
-                          : path.includes('16')
-                            ? '16.x'
-                            : undefined,
-                    }
-                    sendEvent('source', source)
-                  }
-                }
-              }
-            } else if (part.type === 'tool-result') {
-              const res = (part as any).result
-              if (part.toolName === 'knowledge_base_read' && res?.content) {
-                for (const item of res.content) {
-                  if (item.type === 'text' && typeof item.text === 'string') {
-                    const firstHeading = item.text.match(/^#\s+(.+)$/m)
-                    if (firstHeading && firstHeading[1]) {
-                      const heading = firstHeading[1].trim()
-                      const source: GroundedSource = {
-                        id: `heading-${heading.toLowerCase().replace(/\s+/g, '-')}`,
-                        title: heading,
-                        path: 'Sanity Knowledge Base (kbU7pqSq7jdK)',
-                        type: 'documentation',
-                        snippet: item.text.slice(0, 200).trim() + '...',
-                      }
-                      sendEvent('source', source)
-                    }
-                  }
-                }
-              }
-            } else if (part.type === 'text-delta') {
-              const delta = (part as any).textDelta || (part as any).text || ''
-              if (delta) {
-                sendEvent('text', { delta })
-              }
-            } else if (part.type === 'error') {
-              throw (part as any).error || new Error('Stream execution error')
-            }
-          }
-
-          sendEvent('done', { completed: true })
-          controller.close()
-        } catch (streamError: any) {
-          console.error('[API /api/chat Stream Error]', streamError)
-
-          let userFriendlyMessage =
-            'An error occurred while retrieving documentation from Sanity Context MCP.'
-          const rawMessage = streamError?.message || ''
-
-          if (
-            rawMessage.includes('quota') ||
-            rawMessage.includes('429') ||
-            rawMessage.includes('RESOURCE_EXHAUSTED')
-          ) {
-            userFriendlyMessage =
-              'Gemini API rate limit reached. Please wait 15-30 seconds before retrying.'
-          } else if (
-            rawMessage.includes('503') ||
-            rawMessage.includes('high demand') ||
-            rawMessage.includes('UNAVAILABLE')
-          ) {
-            userFriendlyMessage =
-              'Gemini model is currently experiencing temporary high demand from Google. Please click Retry in a few seconds.'
-          } else if (
-            rawMessage.includes('SANITY_API_READ_TOKEN') ||
-            rawMessage.includes('Unauthorized')
-          ) {
-            userFriendlyMessage =
-              'Authentication with Sanity Context MCP failed. Please check server configuration.'
-          } else if (rawMessage.includes('GEMINI_API_KEY')) {
-            userFriendlyMessage =
-              'Gemini API key is missing or invalid on the server.'
-          } else if (
-            rawMessage.includes('fetch failed') ||
-            rawMessage.includes('ECONNREFUSED')
-          ) {
-            userFriendlyMessage =
-              'Failed to connect to the hosted Sanity Context MCP service. Please verify network access.'
-          }
-
-          sendEvent('error', { message: userFriendlyMessage })
-          controller.close()
-        }
-      },
-    })
-
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream; charset=utf-8',
-        'Cache-Control': 'no-cache, no-transform',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      },
-    })
-  } catch (err: any) {
-    console.error('[API /api/chat Error]', err)
+  // 1. Origin verification
+  const origin = req.headers.get('origin')
+  const host = req.headers.get('host')
+  if (!isOriginAllowed(origin, host)) {
+    logger.warn('request_origin_forbidden', { origin, host })
     return new Response(
-      JSON.stringify({
-        error:
-          'Failed to process chat request. Secrets and credentials have been kept secure.',
-      }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: 'Forbidden: Request origin is not permitted.' }),
+      {
+        status: 403,
+        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+      }
     )
   }
+
+  // 2. Rate limiting check
+  const clientIp =
+    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+    req.headers.get('x-real-ip') ||
+    'anonymous'
+
+  const rateCheck = globalRateLimiter.check(clientIp)
+  if (!rateCheck.allowed) {
+    logger.warn('rate_limit_exceeded', {
+      clientIp,
+      limit: rateCheck.limit,
+      resetMs: rateCheck.resetMs,
+    })
+
+    return new Response(
+      JSON.stringify({
+        error: 'Too many requests. Please wait a moment before trying again.',
+        code: 'RATE_LIMIT_EXCEEDED',
+      }),
+      {
+        status: 429,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Request-Id': requestId,
+          'X-RateLimit-Limit': String(rateCheck.limit),
+          'X-RateLimit-Remaining': '0',
+          'X-RateLimit-Reset': String(Math.ceil(rateCheck.resetMs / 1000)),
+          'Retry-After': String(Math.ceil(rateCheck.resetMs / 1000)),
+        },
+      }
+    )
+  }
+
+  // 3. Body reading & payload size validation
+  let rawBody: string
+  try {
+    rawBody = await req.text()
+  } catch (err: unknown) {
+    logger.error('failed_reading_request_body', err)
+    return new Response(
+      JSON.stringify({ error: 'Failed to read request body.' }),
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+      }
+    )
+  }
+
+  const sizeValidation = validatePayloadSize(rawBody)
+  if (!sizeValidation.valid) {
+    logger.warn('payload_size_limit_exceeded', {
+      error: sizeValidation.error,
+    })
+    return new Response(
+      JSON.stringify({
+        error: sizeValidation.error || 'Payload size exceeds limit.',
+        code: 'PAYLOAD_TOO_LARGE',
+      }),
+      {
+        status: 413,
+        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+      }
+    )
+  }
+
+  // 4. JSON parsing & Zod Schema Validation
+  let parsedJson: unknown
+  try {
+    parsedJson = rawBody ? JSON.parse(rawBody) : {}
+  } catch {
+    logger.warn('invalid_json_payload')
+    return new Response(
+      JSON.stringify({
+        error: 'Invalid JSON request payload.',
+        code: 'INVALID_JSON',
+      }),
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+      }
+    )
+  }
+
+  const validation = validateChatRequest(parsedJson)
+  if (!validation.success) {
+    logger.warn('request_validation_failed', {
+      error: validation.error,
+      details: validation.details,
+    })
+    return new Response(
+      JSON.stringify({
+        error: validation.error,
+        code: 'VALIDATION_ERROR',
+        details: validation.details,
+      }),
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', 'X-Request-Id': requestId },
+      }
+    )
+  }
+
+  const { prompt, messages } = validation.data
+  logger.info('chat_request_received', {
+    prompt,
+    messages,
+  })
+
+  // 5. Configurable Timeout & Cancellation Setup
+  const requestTimeoutMs = process.env.REQUEST_TIMEOUT_MS
+    ? parseInt(process.env.REQUEST_TIMEOUT_MS, 10)
+    : 55_000 // 55s timeout safely inside Vercel's 60s maxDuration
+
+  const abortController = new AbortController()
+
+  // Propagate client disconnection to agent
+  const onClientDisconnect = () => {
+    logger.warn('client_disconnected_aborting')
+    abortController.abort()
+  }
+
+  if (req.signal) {
+    req.signal.addEventListener('abort', onClientDisconnect, { once: true })
+  }
+
+  const timeoutTimer = setTimeout(() => {
+    logger.warn('request_timeout_aborting', { timeoutMs: requestTimeoutMs })
+    abortController.abort()
+  }, requestTimeoutMs)
+
+  const encoder = new TextEncoder()
+
+  // 6. Streaming SSE Response with Guaranteed Cleanup
+  const stream = new ReadableStream({
+    async start(controller) {
+      let agentCleanup: (() => Promise<void>) | null = null
+
+      function sendEvent(event: StreamEvent) {
+        try {
+          const payload = `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+          controller.enqueue(encoder.encode(payload))
+        } catch {
+          // Stream controller may already be closed if client disconnected
+        }
+      }
+
+      try {
+        sendEvent({
+          type: 'status',
+          message: 'Initializing Sanity Context MCP connection...',
+          timestamp: new Date().toISOString(),
+        })
+
+        const { streamResult, cleanup } = await askDevDocsAgentStream({
+          prompt,
+          messages,
+          signal: abortController.signal,
+          timeoutMs: requestTimeoutMs,
+          requestId,
+          onStatus: (status) => {
+            sendEvent({
+              type: 'status',
+              message: status,
+              timestamp: new Date().toISOString(),
+            })
+          },
+        })
+
+        agentCleanup = cleanup
+
+        sendEvent({
+          type: 'status',
+          message: 'Querying Sanity Knowledge Base...',
+          timestamp: new Date().toISOString(),
+        })
+
+        const discoveredPaths = new Set<string>()
+        const discoveredSources = new Set<string>()
+        let stepCount = 0
+
+        for await (const part of streamResult.fullStream) {
+          if (abortController.signal.aborted) {
+            throw new Error('Request was aborted')
+          }
+
+          if (part.type === 'tool-call') {
+            const input = (part as any).args || (part as any).input || {}
+            const invocation: AgentToolInvocation = {
+              toolName: part.toolName,
+              args: input as Record<string, unknown>,
+              timestamp: new Date().toISOString(),
+            }
+            sendEvent({
+              type: 'tool_call',
+              toolName: part.toolName,
+              args: invocation.args,
+              timestamp: invocation.timestamp,
+            })
+
+            // Normalize and emit sources discovered from tool calls
+            const sources = extractSourcesFromToolCall(part.toolName, input, discoveredPaths)
+            for (const src of sources) {
+              sendEvent({ type: 'source', source: src })
+            }
+          } else if (part.type === 'tool-result') {
+            stepCount++
+            const res = (part as any).result
+            // Extract grounded sources from content
+            const headingSources = extractSourcesFromToolResult(
+              part.toolName,
+              res,
+              discoveredSources
+            )
+            for (const src of headingSources) {
+              sendEvent({ type: 'source', source: src })
+            }
+          } else if (part.type === 'text-delta') {
+            const delta = (part as any).textDelta || (part as any).text || ''
+            if (delta) {
+              sendEvent({ type: 'text', delta })
+            }
+          } else if (part.type === 'error') {
+            throw (part as any).error || new Error('Stream execution encountered error')
+          }
+        }
+
+        const durationMs = logger.getElapsedMs()
+        logger.info('stream_completed_successfully', { durationMs, steps: stepCount })
+        sendEvent({
+          type: 'done',
+          completed: true,
+          durationMs,
+          steps: stepCount,
+        })
+      } catch (streamError: unknown) {
+        logger.error('stream_execution_failed', streamError)
+        const sanitized = sanitizeError(streamError)
+        sendEvent({
+          type: 'error',
+          message: sanitized.message,
+          code: sanitized.code,
+        })
+      } finally {
+        clearTimeout(timeoutTimer)
+        if (req.signal) {
+          req.signal.removeEventListener('abort', onClientDisconnect)
+        }
+        if (agentCleanup) {
+          try {
+            await agentCleanup()
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+        try {
+          controller.close()
+        } catch {
+          // Controller might already be closed
+        }
+      }
+    },
+    async cancel() {
+      // Called when consumer closes/aborts the readable stream
+      logger.warn('stream_cancelled_by_reader')
+      abortController.abort()
+      clearTimeout(timeoutTimer)
+    },
+  })
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      'X-Request-Id': requestId,
+      'X-RateLimit-Limit': String(rateCheck.limit),
+      'X-RateLimit-Remaining': String(rateCheck.remaining),
+    },
+  })
 }

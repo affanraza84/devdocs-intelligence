@@ -140,7 +140,7 @@ export function ChatContainer() {
               )
             )
           } else if (eventType === 'source') {
-            const source: GroundedSource = parsedData
+            const source: GroundedSource = parsedData.source || parsedData
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === assistantMessageId

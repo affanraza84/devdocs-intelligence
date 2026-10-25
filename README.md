@@ -268,55 +268,86 @@ cd frontend
 npm run build
 ```
 
+## Production-Grade Agent Architecture
+
+The agent architecture is decoupled into cohesive, maintainable modules located in `frontend/lib/agent/` and shared with the standalone agent server and CLI runner:
+
+- **Runtime Schema Validation (`validation.ts`)**: Built with Zod to enforce strict boundary validation. Rejects empty prompts, whitespace-only queries, prompts exceeding 4,000 characters, corrupted message structures, invalid roles, and oversized payloads exceeding 64KB (mitigating memory denial-of-service).
+- **MCP Client Lifecycle Management (`mcp-manager.ts`)**: Encapsulates hosted Sanity Context MCP connections within a `ManagedMcpSession`. Enforces connection timeouts, handles transient socket errors with retries, guarantees idempotent client cleanup (`close()`) across success, failure, and client abort scenarios, and cleans up active timer handles.
+- **Source Normalization & Provenance (`sources.ts`)**: Parses Sanity knowledge base paths into structured `GroundedSource` instances (`migrationGuide`, `apiReference`, `releaseNote`, `documentation`), formats titles, identifies target framework versions (14.x, 15.x, 16.x), and deduplicates sources from tool calls and Markdown headings.
+- **Error Categorization & Sanitization (`errors.ts`)**: Distinguishes transient errors (Gemini 429 rate limit, 503 service unavailable, network timeout, ECONNRESET) from permanent failures (400 validation, 401 unauthorized, 499 aborted). Sanitizes client-facing error payloads by stripping API keys, Sanity tokens, credentials, and internal stack traces.
+- **Safe Exponential Retries (`retry.ts`)**: Provides safe retries with exponential backoff and jitter strictly for transient failures. Never retries permanent errors or aborted requests, preventing cascading failure stampedes.
+- **In-Memory Rate Limiting (`rate-limiter.ts`)**: Implements sliding-window request quotas per client identifier (default 30 requests/minute) with standard HTTP headers (`X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`) and automated stale record pruning.
+- **Structured Server-Side Logging (`logger.ts`)**: Outputs JSON-formatted server logs with unique `x-request-id` correlation IDs, duration measurements, and metadata sanitization. Complete user conversations and prompt bodies are never logged by default.
+- **Unified Model Orchestration (`orchestration.ts`)**: Connects Gemini via `@ai-sdk/google` and hosted Sanity Context MCP via `@ai-sdk/mcp`. Binds execution step bounds (`stopWhen: stepCountIs(maxSteps)`), request cancellation via `AbortSignal`, and automatic resource cleanup.
+
+```mermaid
+flowchart TD
+    Req["Incoming HTTP / SSE Request"] --> Ratelimit["Rate Limiter (Sliding Window)"]
+    Ratelimit -->|"Allowed"| Validator["Zod Payload & Size Validator"]
+    Ratelimit -->|"Exceeded"| Err429["429 Rate Limit Response"]
+    Validator -->|"Valid"| Orchestrator["Orchestrator + ManagedMcpSession"]
+    Validator -->|"Invalid"| Err400["400 Validation Error"]
+    Orchestrator --> Retry["Transient Retry Engine"]
+    Retry --> MCP["Sanity Context MCP (Connection Timeout)"]
+    Retry --> Gemini["Gemini Model (Step Limit: 8)"]
+    Gemini --> Normalizer["Source Normalizer & Deduplicator"]
+    Normalizer --> SSE["Typed SSE Stream (status, tool_call, source, text, done)"]
+    Orchestrator -.->|"Client Disconnect / Timeout"| Cleanup["Guaranteed MCP Client Cleanup"]
+```
+
 ## Environment Variables
 
 The following environment variables are utilized across the root project and frontend. All values must remain server-side:
 
-| Variable Name            | Required | Scope            | Purpose                                                                      |
-| :----------------------- | :------- | :--------------- | :--------------------------------------------------------------------------- |
-| `SANITY_API_READ_TOKEN`  | Yes      | Server           | Bearer token for authenticating with the hosted Sanity Context MCP endpoint. |
-| `SANITY_CONTEXT_MCP_URL` | Yes      | Server           | URL endpoint for the hosted Sanity Context MCP service.                      |
-| `GEMINI_API_KEY`         | Yes      | Server           | Google Generative AI API key for invoking the Gemini model.                  |
-| `SANITY_PROJECT_ID`      | Optional | Studio / Scripts | Sanity project identifier (`0ovd9f2s`).                                      |
-| `SANITY_DATASET`         | Optional | Studio / Scripts | Target dataset (`production`).                                               |
-| `SANITY_API_VERSION`     | Optional | Studio / Scripts | Sanity API version date (`2026-01-01`).                                      |
-| `SANITY_WRITE_TOKEN`     | Optional | Seed Pipeline    | API token with write permissions for seeding corpus data.                    |
-| `GEMINI_MODEL`           | Optional | Server           | Target Gemini model identifier (defaults to `gemini-3.8-flash`).             |
-| `PORT`                   | Optional | Agent Server     | Port for the standalone agent server (defaults to `3001`).                   |
+| Variable Name             | Required | Scope            | Default              | Purpose                                                                             |
+| :------------------------ | :------- | :--------------- | :------------------- | :---------------------------------------------------------------------------------- |
+| `SANITY_API_READ_TOKEN`   | Yes      | Server           | —                    | Bearer token for authenticating with the hosted Sanity Context MCP endpoint.        |
+| `SANITY_CONTEXT_MCP_URL`  | Yes      | Server           | hosted endpoint      | URL endpoint for the hosted Sanity Context MCP service.                             |
+| `GEMINI_API_KEY`          | Yes      | Server           | —                    | Google Generative AI API key for invoking the Gemini model.                         |
+| `GEMINI_MODEL`            | Optional | Server           | `gemini-3.8-flash`   | Target Gemini model identifier.                                                     |
+| `SANITY_PROJECT_ID`       | Optional | Studio / Scripts | `0ovd9f2s`           | Sanity project identifier.                                                          |
+| `SANITY_DATASET`          | Optional | Studio / Scripts | `production`         | Target dataset.                                                                     |
+| `SANITY_API_VERSION`      | Optional | Studio / Scripts | `2026-01-01`         | Sanity API version date.                                                            |
+| `SANITY_WRITE_TOKEN`      | Optional | Seed Pipeline    | —                    | API token with write permissions for seeding corpus data.                           |
+| `RATE_LIMIT_MAX_REQUESTS` | Optional | Server           | `30`                 | Maximum allowed requests per client within the rate limit window.                   |
+| `RATE_LIMIT_WINDOW_MS`    | Optional | Server           | `60000`              | Rate limit window in milliseconds (1 minute).                                       |
+| `SANITY_MCP_TIMEOUT_MS`   | Optional | Server           | `15000`              | Connection timeout in milliseconds for initializing the Sanity Context MCP client.  |
+| `REQUEST_TIMEOUT_MS`      | Optional | Server           | `55000`              | Server-side request timeout in milliseconds (safely below Vercel's 60s maxDuration).|
+| `AGENT_MAX_STEPS`         | Optional | Server           | `8`                  | Maximum multi-step execution limit for tool calling per prompt.                     |
+| `ALLOWED_ORIGIN`          | Optional | Server           | `*`                  | Allowed CORS origin for cross-origin browser clients.                               |
+| `PORT`                    | Optional | Agent Server     | `3001`               | Port for the standalone agent server.                                               |
 
 _Note: None of these variables should be prefixed with `NEXT_PUBLIC_`._
 
-## Sanity Setup
+## Deployment & Serverless Limitations
 
-- **Project ID**: `0ovd9f2s`
-- **Dataset**: `production`
+- **Vercel Serverless Function Execution Limits**: Next.js API route handlers have execution time bounds (`maxDuration = 60` seconds on Vercel Hobby/Pro). To prevent timeouts, the agent enforces an internal `REQUEST_TIMEOUT_MS` (default 55s) and `stopWhen: stepCountIs(8)` execution limit.
+- **Streaming Transfer & Client Cancellation**: Browser tab closures and client aborts propagate through `req.signal`, triggering immediate cancellation of LLM streams and deterministic closure of Sanity MCP sessions.
+- **In-Memory Rate Limiting**: The built-in rate limiter operates in-memory per serverless instance. For horizontally scaled multi-region serverless deployments, an external state store (such as Upstash Redis or Vercel KV) is recommended.
+- **Outbound Network Connectivity**: The serverless runtime must have outbound HTTPS access to `api.sanity.io` and Google Generative AI endpoints.
 
-### Seeding the Corpus
+## Automated Testing Suite
 
-The repository contains an idempotent, 4-phase seed script that populates the Sanity Content Lake with the curated Next.js corpus:
+The project includes an automated test suite verifying all reliability and agent architecture requirements with mocked external dependencies (no live credentials or network access required):
 
 ```bash
-npm run seed:nextjs
+# Run tests from the repository root
+npm test
+
+# Run tests from the frontend directory
+cd frontend && npm test
 ```
 
-The pipeline executes through:
-
-1. **Phase A (Base Ingestion)**: Creates/replaces 30 base documents with rich Portable Text and metadata.
-2. **Phase B (ID Mapping)**: Constructs in-memory routing tables from deterministic slugs and IDs.
-3. **Phase C (Relationship Patching)**: Resolves and commits 128 cross-document references.
-4. **Phase D (Dataset Verification)**: Queries GROQ counts and verifies sample reference hydration.
-
-## Testing & Verification
-
-The repository implementation has undergone verification:
-
-- **TypeScript Validation**: Zero type errors across root and frontend workspaces (`npx tsc --noEmit` and `npm run typecheck` in `frontend/`).
-- **Production Builds**: Clean production builds verified for both Sanity Studio (`sanity build`) and Next.js frontend (`next build`).
-- **MCP Integration Testing**: Direct tool communication verified over HTTP transport to the hosted Sanity Context MCP server with authenticated bearer tokens.
-- **Streaming Response Behavior**: Verified real-time chunked transfer using Server-Sent Events (`/api/chat`) and CLI streaming (`scripts/ask-agent.ts`).
-- **Grounded Source Attribution**: Verified extraction and rendering of citation metadata from `knowledge_base_read` tool invocations.
-- **Error Handling**: Handled edge conditions including Gemini 429 rate limit errors, 503 upstream demand surges, and network timeouts with user-friendly recovery prompts.
-- **Security Check**: Verified that no secrets or API keys are bundled into static assets or sent in client payloads.
+### Test Coverage (33 Automated Tests):
+- **Request Payload Validation (`tests/validation.test.ts`)**: Valid prompts, message histories, empty/whitespace prompt rejection, 4,000 character bounds, 50-message history bounds, invalid role rejection, 64KB payload DOS protection.
+- **Source Normalization (`tests/sources.test.ts`)**: Path categorization, version extraction (14.x, 15.x, 16.x), title formatting, heading extraction from Portable Text/Markdown, deduplication.
+- **Error Sanitization (`tests/errors.test.ts`)**: Token masking (`[REDACTED_SANITY_TOKEN]`, `[REDACTED_GEMINI_KEY]`), user path stripping, transient vs. permanent error classification, HTTP status code mapping (400, 429, 499, 503, 504, 500).
+- **Rate Limiting (`tests/rate-limiter.test.ts`)**: Quota enforcement, decrementing tokens, header calculations, client isolation, reset operations.
+- **Safe Retries (`tests/retry.test.ts`)**: Transient 503/429 retries with exponential backoff, immediate rejection of permanent errors (validation, 401), cancellation handling.
+- **MCP Client Lifecycle (`tests/mcp-manager.test.ts`)**: Tool retrieval, failure wrapping, idempotent close handling, immediate cleanup on AbortSignal.
+- **Timeouts & Cancellation (`tests/cancellation-timeout.test.ts`)**: AbortSignal propagation to MCP sessions, request timeout handling, resource disposal.
+- **Streaming Event Sequencing (`tests/stream-events.test.ts`)**: Typed SSE event ordering (`status` → `tool_call` → `source` → `text` → `done`), terminal error events.
 
 ## Sanity Challenge
 
